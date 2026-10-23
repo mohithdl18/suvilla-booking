@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import UtilBar from "@/components/Booking/UtilBar";
 import RoomAvailability from "@/components/Booking/RoomAvailability";
@@ -65,6 +65,7 @@ function getRoomId(room) {
 
 function mergeRoomAddons(selectedRoom, selectedAddons) {
     const selectedRooms = getSelectedRooms(selectedRoom);
+
     const addonRooms = Array.isArray(selectedAddons?.rooms)
         ? selectedAddons.rooms
         : [];
@@ -76,11 +77,13 @@ function mergeRoomAddons(selectedRoom, selectedAddons) {
 
         return {
             roomId: getRoomId(addonRoom),
+
             roomName:
                 originalRoom?.name ??
                 originalRoom?.title ??
                 originalRoom?.roomName ??
                 getRoomId(addonRoom),
+
             guests: {
                 adults: Number(
                     addonRoom.guests?.adults ??
@@ -88,6 +91,7 @@ function mergeRoomAddons(selectedRoom, selectedAddons) {
                         originalRoom?.adults ??
                         2
                 ),
+
                 children: Number(
                     addonRoom.guests?.children ??
                         originalRoom?.guests?.children ??
@@ -102,14 +106,16 @@ function mergeRoomAddons(selectedRoom, selectedAddons) {
 function normalizeAddonChoices(addons) {
     // Accept add-ons directly or nested under `addons`.
     // Only supported selections are sent to the backend.
-    // Client-calculated prices are never used as authoritative pricing.
+    // The backend remains authoritative for pricing.
     const source = addons?.addons ?? addons ?? {};
 
     return {
         mealPlan: Array.isArray(source.mealPlan)
             ? source.mealPlan
             : [],
+
         driver: source.driver === true,
+
         driverMealPlan: Array.isArray(source.driverMealPlan)
             ? source.driverMealPlan
             : [],
@@ -162,15 +168,24 @@ function loadRazorpayCheckout() {
             existingScript.addEventListener(
                 "load",
                 () => {
-                    if (window.Razorpay) resolve(true);
-                    else reject(new Error("Unable to load Razorpay Checkout."));
+                    if (window.Razorpay) {
+                        resolve(true);
+                    } else {
+                        reject(
+                            new Error("Unable to load Razorpay Checkout.")
+                        );
+                    }
                 },
                 { once: true }
             );
 
             existingScript.addEventListener(
                 "error",
-                () => reject(new Error("Unable to load Razorpay Checkout.")),
+                () => {
+                    reject(
+                        new Error("Unable to load Razorpay Checkout.")
+                    );
+                },
                 { once: true }
             );
 
@@ -178,12 +193,18 @@ function loadRazorpayCheckout() {
         }
 
         const script = document.createElement("script");
+
         script.src = RAZORPAY_CHECKOUT_URL;
         script.async = true;
 
         script.onload = () => {
-            if (window.Razorpay) resolve(true);
-            else reject(new Error("Unable to initialize Razorpay Checkout."));
+            if (window.Razorpay) {
+                resolve(true);
+            } else {
+                reject(
+                    new Error("Unable to initialize Razorpay Checkout.")
+                );
+            }
         };
 
         script.onerror = () => {
@@ -247,15 +268,15 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
                 },
             },
 
-            // Resolve only when Razorpay returns successful payment details.
-            // The backend will independently verify the payment.
+            // Resolve only after Razorpay returns successful payment details.
+            // The backend independently verifies the payment.
             handler: (paymentResponse) => {
                 finish(resolve, paymentResponse);
             },
         });
 
-        // Do not reject on payment.failed. A failed attempt can occur while
-        // the customer is still in Razorpay and may retry the payment.
+        // A failed attempt should not close the promise immediately.
+        // The customer may retry while Razorpay Checkout remains open.
         checkout.on("payment.failed", (response) => {
             console.warn(
                 "Razorpay payment attempt failed; checkout remains open for retry.",
@@ -269,8 +290,6 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
 }
 
 export default function BookingPage() {
-    // Set dates after mounting to avoid evaluating the current date during
-    // the initial server prerender.
     const [dates, setDates] = useState({
         checkIn: "",
         checkOut: "",
@@ -307,57 +326,104 @@ export default function BookingPage() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
+    // Holds the automatic-dismiss timer for error notifications.
+    const errorTimeoutRef = useRef(null);
+
+    const clearError = useCallback(() => {
+        if (errorTimeoutRef.current) {
+            clearTimeout(errorTimeoutRef.current);
+            errorTimeoutRef.current = null;
+        }
+
+        setError("");
+    }, []);
+
+    const showError = useCallback((message) => {
+        // Reset the timer whenever a new error is displayed.
+        if (errorTimeoutRef.current) {
+            clearTimeout(errorTimeoutRef.current);
+        }
+
+        setError(message);
+
+        errorTimeoutRef.current = setTimeout(() => {
+            setError("");
+            errorTimeoutRef.current = null;
+        }, 10000);
+    }, []);
+
+    // Prevent a pending timer from firing after this page unmounts.
+    useEffect(() => {
+        return () => {
+            if (errorTimeoutRef.current) {
+                clearTimeout(errorTimeoutRef.current);
+            }
+        };
+    }, []);
+
     const selectedRooms = getSelectedRooms(selectedRoom);
-    const bookingRooms = Array.isArray(addons?.rooms) ? addons.rooms : [];
 
-    const handleSearch = useCallback((search) => {
-        const roomGuests =
-            Array.isArray(search.rooms) && search.rooms.length > 0
-                ? search.rooms
-                : [
-                      {
-                          id: 1,
-                          adults: search.adults ?? 2,
-                          children: search.children ?? 0,
-                      },
-                  ];
+    const bookingRooms = Array.isArray(addons?.rooms)
+        ? addons.rooms
+        : [];
 
-        setDates({
-            checkIn: search.checkIn,
-            checkOut: search.checkOut,
-        });
+    const handleSearch = useCallback(
+        (search) => {
+            const roomGuests =
+                Array.isArray(search.rooms) && search.rooms.length > 0
+                    ? search.rooms
+                    : [
+                          {
+                              id: 1,
+                              adults: search.adults ?? 2,
+                              children: search.children ?? 0,
+                          },
+                      ];
 
-        setGuests({
-            adults: search.adults ?? 2,
-            children: search.children ?? 0,
-            rooms: roomGuests,
-            roomCount: search.roomCount ?? roomGuests.length,
-            totalGuests:
-                search.totalGuests ??
-                roomGuests.reduce(
-                    (sum, item) =>
-                        sum +
-                        (Number(item.adults) || 0) +
-                        (Number(item.children) || 0),
-                    0
-                ),
-        });
+            setDates({
+                checkIn: search.checkIn,
+                checkOut: search.checkOut,
+            });
 
-        setSelectedRoom(null);
-        setAddons(null);
-        setCurrentStep(null);
-        setBooking(null);
-        setError("");
+            setGuests({
+                adults: search.adults ?? 2,
+                children: search.children ?? 0,
+                rooms: roomGuests,
+                roomCount: search.roomCount ?? roomGuests.length,
 
-        setSearchKey((previous) => previous + 1);
-    }, []);
+                totalGuests:
+                    search.totalGuests ??
+                    roomGuests.reduce(
+                        (sum, item) =>
+                            sum +
+                            (Number(item.adults) || 0) +
+                            (Number(item.children) || 0),
+                        0
+                    ),
+            });
 
-    const handleSelectRoom = useCallback((room) => {
-        setSelectedRoom(room);
-        setAddons(null);
-        setCurrentStep("addons");
-        setError("");
-    }, []);
+            setSelectedRoom(null);
+            setAddons(null);
+            setCurrentStep(null);
+            setBooking(null);
+
+            clearError();
+
+            setSearchKey((previous) => previous + 1);
+        },
+        [clearError]
+    );
+
+    const handleSelectRoom = useCallback(
+        (room) => {
+            setSelectedRoom(room);
+            setAddons(null);
+            setCurrentStep("addons");
+
+            clearError();
+        },
+        [clearError]
+    );
 
     const handleContinueToDetails = useCallback(
         (selectedAddons) => {
@@ -368,7 +434,7 @@ export default function BookingPage() {
                 !Array.isArray(selectedAddons.rooms) ||
                 selectedAddons.rooms.length !== originalRooms.length
             ) {
-                setError(
+                showError(
                     "Please review your selected rooms and try again."
                 );
                 return;
@@ -393,7 +459,7 @@ export default function BookingPage() {
                     (id, index) => id !== receivedRoomIds[index]
                 )
             ) {
-                setError(
+                showError(
                     "Some selected rooms are missing. Please select your rooms again."
                 );
                 return;
@@ -402,14 +468,15 @@ export default function BookingPage() {
             setAddons({
                 rooms: roomsWithAddons,
                 roomCount: roomsWithAddons.length,
+
                 totalGuests: roomsWithAddons.reduce(
                     (sum, room) =>
                         sum + room.guests.adults + room.guests.children,
                     0
                 ),
 
-                // Preserve the complete add-on object for the UI, including
-                // items, total, and meal details for both booking modals.
+                // Preserve the complete add-on object for the UI.
+                // This includes items, total, and meal details for both modals.
                 addons: selectedAddons.addons ?? {},
             });
 
@@ -423,17 +490,20 @@ export default function BookingPage() {
                 specialRequest: "",
             });
 
-            setError("");
+            clearError();
             setCurrentStep("details");
         },
-        [selectedRoom]
+        [selectedRoom, showError, clearError]
     );
 
-    const handleContinueToCheckout = useCallback((customerDetails) => {
-        setCustomer(customerDetails);
-        setError("");
-        setCurrentStep("checkout");
-    }, []);
+    const handleContinueToCheckout = useCallback(
+        (customerDetails) => {
+            setCustomer(customerDetails);
+            clearError();
+            setCurrentStep("checkout");
+        },
+        [clearError]
+    );
 
     const handleConfirmBooking = useCallback(async () => {
         if (
@@ -443,14 +513,14 @@ export default function BookingPage() {
             !customer.email?.trim() ||
             !customer.phone?.trim()
         ) {
-            setError(
+            showError(
                 "Please complete your name, email, phone number, and booking details."
             );
             return;
         }
 
         setLoading(true);
-        setError("");
+        clearError();
 
         let createdBookingId = null;
 
@@ -469,12 +539,12 @@ export default function BookingPage() {
                 customer: normalizeCustomerForRequest(customer),
                 rooms: roomsPayload,
 
-                // Send only the selected add-on choices. The server computes
-                // the actual prices from trusted pricing data.
+                // Send only add-on selections.
+                // The server calculates the actual prices.
                 addons: normalizeAddonChoices(addons),
             };
 
-            // 1. Create the checkout intent. The server calculates pricing.
+            // 1. Create the checkout intent.
             const bookingResponse = await fetch("/api/bookings", {
                 method: "POST",
                 headers: {
@@ -493,7 +563,7 @@ export default function BookingPage() {
 
             createdBookingId = bookingResult.booking.bookingId;
 
-            // 2. Create a Razorpay order for this booking.
+            // 2. Create a Razorpay order.
             const orderResponse = await fetch(
                 "/api/payments/create-order",
                 {
@@ -520,7 +590,7 @@ export default function BookingPage() {
                 );
             }
 
-            // 3. Load Razorpay Checkout and open the payment window.
+            // 3. Load Razorpay and open its checkout window.
             await loadRazorpayCheckout();
 
             const paymentResponse = await openRazorpayCheckout({
@@ -540,7 +610,7 @@ export default function BookingPage() {
                 );
             }
 
-            // 4. The server verifies the signature and checks payment status.
+            // 4. Verify the payment on the server.
             const verificationResponse = await fetch(
                 "/api/payments/verify",
                 {
@@ -573,11 +643,14 @@ export default function BookingPage() {
                 );
             }
 
-            // 5. Show confirmation only after server-side verification.
+            // 5. Show confirmation only after successful server verification.
             setBooking({
                 ...verificationResult.booking,
+
                 bookingId:
-                    verificationResult.booking.bookingId || createdBookingId,
+                    verificationResult.booking.bookingId ||
+                    createdBookingId,
+
                 customer: {
                     name: customer.name,
                     email: customer.email,
@@ -588,18 +661,27 @@ export default function BookingPage() {
             setSelectedRoom(null);
             setAddons(null);
             setCurrentStep(null);
-            setError("");
+
+            clearError();
         } catch (err) {
             console.error("Booking/payment flow error:", err);
 
-            setError(
+            showError(
                 err.message ||
                     "Something went wrong. Please check your booking status before retrying."
             );
         } finally {
             setLoading(false);
         }
-    }, [selectedRoom, bookingRooms, customer, dates, addons]);
+    }, [
+        selectedRoom,
+        bookingRooms,
+        customer,
+        dates,
+        addons,
+        showError,
+        clearError,
+    ]);
 
     const closeBookingFlow = useCallback(() => {
         if (loading) return;
@@ -607,8 +689,9 @@ export default function BookingPage() {
         setSelectedRoom(null);
         setAddons(null);
         setCurrentStep(null);
-        setError("");
-    }, [loading]);
+
+        clearError();
+    }, [loading, clearError]);
 
     const startNewBooking = useCallback(() => {
         if (loading) return;
@@ -617,9 +700,11 @@ export default function BookingPage() {
         setSelectedRoom(null);
         setAddons(null);
         setCurrentStep(null);
-        setError("");
+
+        clearError();
+
         setSearchKey((previous) => previous + 1);
-    }, [loading]);
+    }, [loading, clearError]);
 
     const nights =
         dates.checkIn && dates.checkOut
@@ -721,9 +806,10 @@ export default function BookingPage() {
                         </div>
                     )}
 
+                    {/* Error outside the booking modal */}
                     {error && !selectedRoom && (
                         <div
-                            className="mx-auto mt-6 max-w-7xl rounded-xl border p-4 text-sm"
+                            className="relative mx-auto mt-6 max-w-7xl rounded-xl border p-4 pr-12 text-sm"
                             style={{
                                 borderColor: "#b91c1c55",
                                 color: "#b91c1c",
@@ -732,11 +818,21 @@ export default function BookingPage() {
                             role="alert"
                         >
                             {error}
+
+                            <button
+                                type="button"
+                                onClick={clearError}
+                                aria-label="Close error message"
+                                className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-lg font-semibold transition hover:bg-red-100"
+                            >
+                                ×
+                            </button>
                         </div>
                     )}
                 </div>
             </section>
 
+            {/* Add-ons */}
             {selectedRoom && currentStep === "addons" && (
                 <AddonsModal
                     room={selectedRoom}
@@ -753,6 +849,7 @@ export default function BookingPage() {
                 />
             )}
 
+            {/* Guest details */}
             {selectedRoom && currentStep === "details" && (
                 <BookingDetailsModal
                     room={selectedRoom}
@@ -769,6 +866,7 @@ export default function BookingPage() {
                 />
             )}
 
+            {/* Checkout */}
             {selectedRoom && currentStep === "checkout" && !booking && (
                 <Checkout
                     room={selectedRoom}
@@ -786,9 +884,10 @@ export default function BookingPage() {
                 />
             )}
 
+            {/* Error notification during the booking flow */}
             {error && selectedRoom && currentStep && (
                 <div
-                    className="fixed bottom-4 left-4 right-4 z-[200] mx-auto max-w-xl rounded-xl border p-4 text-sm shadow-lg"
+                    className="fixed bottom-4 left-4 right-4 z-[200] mx-auto max-w-xl rounded-xl border p-4 pr-12 text-sm shadow-lg"
                     style={{
                         borderColor: "#b91c1c55",
                         color: "#b91c1c",
@@ -797,9 +896,19 @@ export default function BookingPage() {
                     role="alert"
                 >
                     {error}
+
+                    <button
+                        type="button"
+                        onClick={clearError}
+                        aria-label="Close error message"
+                        className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-lg font-semibold transition hover:bg-red-100"
+                    >
+                        ×
+                    </button>
                 </div>
             )}
 
+            {/* Booking confirmation */}
             {booking && (
                 <BookingConfirmation
                     booking={booking}
