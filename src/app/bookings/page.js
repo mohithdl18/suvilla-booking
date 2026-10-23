@@ -1,7 +1,6 @@
-
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import UtilBar from "@/components/Booking/UtilBar";
 import RoomAvailability from "@/components/Booking/RoomAvailability";
@@ -141,7 +140,9 @@ async function readApiResponse(response) {
 function loadRazorpayCheckout() {
     return new Promise((resolve, reject) => {
         if (typeof window === "undefined") {
-            reject(new Error("Payment checkout is only available in a browser."));
+            reject(
+                new Error("Payment checkout is only available in a browser.")
+            );
             return;
         }
 
@@ -255,7 +256,16 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
 }
 
 export default function BookingPage() {
-    const [dates, setDates] = useState(getDefaultDates);
+    // Set the dates after mounting to avoid evaluating the current time
+    // during the initial server prerender.
+    const [dates, setDates] = useState({
+        checkIn: "",
+        checkOut: "",
+    });
+
+    useEffect(() => {
+        setDates(getDefaultDates());
+    }, []);
 
     const [guests, setGuests] = useState({
         adults: 2,
@@ -547,7 +557,8 @@ export default function BookingPage() {
             // 5. Show confirmation only after server-side verification.
             setBooking({
                 ...verificationResult.booking,
-                bookingId: verificationResult.booking.bookingId || createdBookingId,
+                bookingId:
+                    verificationResult.booking.bookingId || createdBookingId,
                 customer: {
                     name: customer.name,
                     email: customer.email,
@@ -591,14 +602,17 @@ export default function BookingPage() {
         setSearchKey((previous) => previous + 1);
     }, [loading]);
 
-    const nights = Math.max(
-        1,
-        Math.round(
-            (new Date(`${dates.checkOut}T00:00:00Z`).getTime() -
-                new Date(`${dates.checkIn}T00:00:00Z`).getTime()) /
-                86400000
-        )
-    );
+    const nights =
+        dates.checkIn && dates.checkOut
+            ? Math.max(
+                  1,
+                  Math.round(
+                      (new Date(`${dates.checkOut}T00:00:00Z`).getTime() -
+                          new Date(`${dates.checkIn}T00:00:00Z`).getTime()) /
+                          86400000
+                  )
+              )
+            : 1;
 
     return (
         <main
@@ -629,13 +643,20 @@ export default function BookingPage() {
                     </header>
 
                     <div className="mx-auto max-w-6xl">
-                        <UtilBar
-                            onSearch={handleSearch}
-                            initialCheckIn={dates.checkIn}
-                            initialCheckOut={dates.checkOut}
-                            initialAdults={guests.adults}
-                            initialChildren={guests.children}
-                        />
+                        {dates.checkIn && dates.checkOut ? (
+                            <UtilBar
+                                onSearch={handleSearch}
+                                initialCheckIn={dates.checkIn}
+                                initialCheckOut={dates.checkOut}
+                                initialAdults={guests.adults}
+                                initialChildren={guests.children}
+                            />
+                        ) : (
+                            <div
+                                className="h-20 animate-pulse rounded-xl bg-[#052a50]/5"
+                                aria-label="Loading booking dates"
+                            />
+                        )}
 
                         <div className="mx-2 mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-lg bg-[#052a50]/[0.045] px-3 py-2 text-xs text-[#052a50]/65 sm:justify-start sm:px-5">
                             <span>
@@ -666,18 +687,20 @@ export default function BookingPage() {
                         </div>
                     </div>
 
-                    <div className="mx-auto mt-8 max-w-7xl">
-                        <RoomAvailability
-                            key={searchKey}
-                            checkIn={dates.checkIn}
-                            checkOut={dates.checkOut}
-                            adults={guests.adults}
-                            children={guests.children}
-                            guestRooms={guests.rooms}
-                            onSelectRoom={handleSelectRoom}
-                            searchKey={searchKey}
-                        />
-                    </div>
+                    {dates.checkIn && dates.checkOut && (
+                        <div className="mx-auto mt-8 max-w-7xl">
+                            <RoomAvailability
+                                key={searchKey}
+                                checkIn={dates.checkIn}
+                                checkOut={dates.checkOut}
+                                adults={guests.adults}
+                                children={guests.children}
+                                guestRooms={guests.rooms}
+                                onSelectRoom={handleSelectRoom}
+                                searchKey={searchKey}
+                            />
+                        </div>
+                    )}
 
                     {error && !selectedRoom && (
                         <div

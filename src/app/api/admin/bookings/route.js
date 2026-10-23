@@ -1,10 +1,12 @@
-
-import { NextResponse } from "next/server";
+import { NextResponse, connection } from "next/server";
 
 import { getDatabase } from "@/lib/mongodb";
 import { requireAdmin } from "@/lib/requireAdmin";
 
 export async function GET() {
+    // Authentication and database access must run only for an incoming request.
+    await connection();
+
     const auth = await requireAdmin();
 
     if (!auth.authorized) {
@@ -24,7 +26,7 @@ export async function GET() {
                 // Booking identification
                 bookingId: 1,
 
-                // Support both the new multi-room and old single-room formats
+                // Support both multi-room and older single-room bookings
                 roomId: 1,
                 roomIds: 1,
                 rooms: 1,

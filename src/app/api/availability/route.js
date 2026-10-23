@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, connection } from "next/server";
 import { getDatabase } from "@/lib/mongodb";
 
 import {
@@ -8,6 +8,9 @@ import {
 } from "@/logic/booking";
 
 export async function GET(request) {
+    // Wait for the incoming request before using request-specific data.
+    await connection();
+
     try {
         const { searchParams } = new URL(request.url);
 
