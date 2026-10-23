@@ -3,11 +3,11 @@ import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import Razorpay from "razorpay";
 
-import { getDatabase } from "@/lib/mongodb";
+import clientPromise, { getDatabase } from "@/lib/mongodb";
 import { sendBookingConfirmation } from "@/lib/email/sendBookingConfirmation";
 
-// export const runtime = "nodejs";
-// export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function errorResponse(message, status = 400) {
     return NextResponse.json(
@@ -31,23 +31,45 @@ function safeStringEqual(first, second) {
     );
 }
 
-/**
- * Send the confirmation email after payment is confirmed.
- *
- * Resend's stable idempotency key is used by the email helper.
- * Email failure must not undo a successfully paid booking.
- */
+function publicBooking(booking, emailStatus) {
+    return {
+        bookingId: booking.bookingId,
+        status: "confirmed",
+        paymentStatus: "paid",
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        nights: booking.nights,
+        rooms: booking.rooms,
+        guests: booking.guests,
+        addons: booking.addons,
+        pricing: booking.pricing,
+        confirmationEmailStatus: emailStatus,
+    };
+}
+
 async function deliverConfirmationEmail(bookings, booking) {
     if (booking.confirmationEmailStatus === "sent") {
         return "sent";
     }
 
-    await bookings.updateOne(
+    // Avoid concurrent requests sending the same email simultaneously.
+    const claim = await bookings.updateOne(
         {
             _id: booking._id,
             status: "confirmed",
             paymentStatus: "paid",
-            confirmationEmailStatus: { $ne: "sent" },
+            confirmationEmailStatus: {
+                $in: ["pending", "failed", "sending"],
+            },
+            $or: [
+                { confirmationEmailUpdatedAt: { $exists: false } },
+                {
+                    confirmationEmailUpdatedAt: {
+                        $lt: new Date(Date.now() - 5 * 60 * 1000),
+                    },
+                },
+                { confirmationEmailStatus: { $in: ["pending", "failed"] } },
+            ],
         },
         {
             $set: {
@@ -56,6 +78,16 @@ async function deliverConfirmationEmail(bookings, booking) {
             },
         }
     );
+
+    if (claim.modifiedCount !== 1) {
+        const latest = await bookings.findOne({
+            _id: booking._id,
+        });
+
+        return latest?.confirmationEmailStatus === "sent"
+            ? "sent"
+            : latest?.confirmationEmailStatus ?? "pending";
+    }
 
     try {
         await sendBookingConfirmation(booking);
@@ -91,7 +123,7 @@ async function deliverConfirmationEmail(bookings, booking) {
                 _id: booking._id,
                 status: "confirmed",
                 paymentStatus: "paid",
-                confirmationEmailStatus: { $ne: "sent" },
+                confirmationEmailStatus: "sending",
             },
             {
                 $set: {
@@ -107,20 +139,175 @@ async function deliverConfirmationEmail(bookings, booking) {
     }
 }
 
-function publicBooking(booking, emailStatus) {
-    return {
-        bookingId: booking.bookingId,
-        status: "confirmed",
-        paymentStatus: "paid",
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        nights: booking.nights,
-        rooms: booking.rooms,
-        guests: booking.guests,
-        addons: booking.addons,
-        pricing: booking.pricing,
-        confirmationEmailStatus: emailStatus,
-    };
+/**
+ * Finalize only after Razorpay confirms the complete captured payment.
+ * Booking insertion, room reservation, and checkout completion are atomic.
+ */
+async function finalizePaidCheckout({
+    client,
+    db,
+    bookingId,
+    orderId,
+    paymentId,
+    amountPaise,
+}) {
+    const intents = db.collection("checkout_intents");
+    const bookings = db.collection("bookings");
+    const availability = db.collection("availability");
+
+    let finalizedBooking;
+
+    await client.withSession(async (session) => {
+        await session.withTransaction(async () => {
+            // A webhook and browser verification can arrive together.
+            const existingBooking = await bookings.findOne(
+                { bookingId },
+                { session }
+            );
+
+            if (existingBooking) {
+                if (
+                    existingBooking.status === "confirmed" &&
+                    existingBooking.paymentStatus === "paid" &&
+                    existingBooking.razorpayOrderId === orderId &&
+                    existingBooking.razorpayPaymentId === paymentId
+                ) {
+                    finalizedBooking = existingBooking;
+                    return;
+                }
+
+                throw new Error("BOOKING_CONFLICT");
+            }
+
+            const intent = await intents.findOne(
+                { bookingId },
+                { session }
+            );
+
+            if (!intent) {
+                throw new Error("CHECKOUT_NOT_FOUND");
+            }
+
+            if (
+                intent.razorpayOrderId !== orderId ||
+                !Number.isFinite(intent.pricing?.total) ||
+                Math.round(intent.pricing.total * 100) !== amountPaise
+            ) {
+                throw new Error("PAYMENT_AMOUNT_MISMATCH");
+            }
+
+            if (
+                intent.status !== "awaiting_payment" &&
+                intent.status !== "payment_processing"
+            ) {
+                throw new Error("CHECKOUT_NOT_PAYABLE");
+            }
+
+            const now = new Date();
+            const roomIds = intent.roomIds;
+            const stayDates = intent.stayDates;
+
+            if (
+                !Array.isArray(roomIds) ||
+                roomIds.length < 1 ||
+                !Array.isArray(stayDates) ||
+                stayDates.length < 1
+            ) {
+                throw new Error("INVALID_CHECKOUT_DATA");
+            }
+
+            // Ensure one availability document exists per stay date.
+            for (const date of stayDates) {
+                await availability.updateOne(
+                    { date },
+                    {
+                        $setOnInsert: {
+                            date,
+                            booked_rooms: [],
+                            blocked_rooms: [],
+                        },
+                    },
+                    {
+                        upsert: true,
+                        session,
+                    }
+                );
+            }
+
+            // Reserve each room only if it is still available.
+            // Any failed update aborts the whole transaction.
+            for (const date of stayDates) {
+                const reservation = await availability.updateOne(
+                    {
+                        date,
+                        booked_rooms: { $nin: roomIds },
+                        blocked_rooms: { $nin: roomIds },
+                    },
+                    {
+                        $addToSet: {
+                            booked_rooms: { $each: roomIds },
+                        },
+                    },
+                    { session }
+                );
+
+                if (reservation.modifiedCount !== 1) {
+                    throw new Error("ROOM_UNAVAILABLE_AFTER_PAYMENT");
+                }
+            }
+
+            const booking = {
+                bookingId: intent.bookingId,
+                roomIds: intent.roomIds,
+                rooms: intent.rooms,
+                addons: intent.addons,
+                checkIn: intent.checkIn,
+                checkOut: intent.checkOut,
+                nights: intent.nights,
+                customer: intent.customer,
+                guests: intent.guests,
+                pricing: intent.pricing,
+                status: "confirmed",
+                paymentStatus: "paid",
+                razorpayOrderId: orderId,
+                razorpayPaymentId: paymentId,
+                paymentVerifiedAt: now,
+                createdAt: intent.createdAt ?? now,
+                confirmedAt: now,
+                updatedAt: now,
+                confirmationEmailStatus: "pending",
+            };
+
+            await bookings.insertOne(booking, { session });
+
+            const intentUpdate = await intents.updateOne(
+                {
+                    _id: intent._id,
+                    status: {
+                        $in: ["awaiting_payment", "payment_processing"],
+                    },
+                },
+                {
+                    $set: {
+                        status: "completed",
+                        paymentStatus: "paid",
+                        razorpayPaymentId: paymentId,
+                        paymentVerifiedAt: now,
+                        updatedAt: now,
+                    },
+                },
+                { session }
+            );
+
+            if (intentUpdate.modifiedCount !== 1) {
+                throw new Error("CHECKOUT_FINALIZATION_CONFLICT");
+            }
+
+            finalizedBooking = booking;
+        });
+    });
+
+    return finalizedBooking;
 }
 
 export async function POST(request) {
@@ -146,21 +333,26 @@ export async function POST(request) {
             );
         }
 
-        const body = await request.json();
+        let body;
+
+        try {
+            body = await request.json();
+        } catch {
+            return errorResponse("Invalid JSON request body.");
+        }
+
+        const allowedKeys = [
+            "bookingId",
+            "razorpay_payment_id",
+            "razorpay_order_id",
+            "razorpay_signature",
+        ];
 
         if (
             !body ||
             typeof body !== "object" ||
             Array.isArray(body) ||
-            Object.keys(body).some(
-                (key) =>
-                    ![
-                        "bookingId",
-                        "razorpay_payment_id",
-                        "razorpay_order_id",
-                        "razorpay_signature",
-                    ].includes(key)
-            )
+            Object.keys(body).some((key) => !allowedKeys.includes(key))
         ) {
             return errorResponse("Invalid payment verification request.");
         }
@@ -186,62 +378,57 @@ export async function POST(request) {
         }
 
         const db = await getDatabase();
+        const intents = db.collection("checkout_intents");
         const bookings = db.collection("bookings");
 
-        let booking = await bookings.findOne({ bookingId });
+        // Idempotent retry: the same verified payment already finalized.
+        let existingBooking = await bookings.findOne({ bookingId });
 
-        if (!booking) {
-            return errorResponse("Booking not found.", 404);
-        }
+        if (existingBooking) {
+            if (
+                existingBooking.status !== "confirmed" ||
+                existingBooking.paymentStatus !== "paid" ||
+                existingBooking.razorpayOrderId !== submittedOrderId ||
+                existingBooking.razorpayPaymentId !== paymentId
+            ) {
+                return errorResponse(
+                    "This booking reference has a different payment record.",
+                    409
+                );
+            }
 
-        // Allow safe retries after the same payment was already verified.
-        if (
-            booking.status === "confirmed" &&
-            booking.paymentStatus === "paid" &&
-            booking.razorpayPaymentId === paymentId
-        ) {
             const emailStatus = await deliverConfirmationEmail(
                 bookings,
-                booking
+                existingBooking
             );
 
-            booking = await bookings.findOne({ bookingId });
+            existingBooking = await bookings.findOne({ bookingId });
 
             return NextResponse.json({
                 success: true,
-                message:
-                    emailStatus === "failed"
-                        ? "Payment is confirmed, but the confirmation email could not be sent."
-                        : "Payment has already been verified.",
-                booking: publicBooking(booking, emailStatus),
+                message: "Payment has already been verified.",
+                booking: publicBooking(existingBooking, emailStatus),
             });
         }
 
-        if (
-            booking.status !== "pending_payment" ||
-            booking.paymentStatus !== "pending"
-        ) {
+        const intent = await intents.findOne({ bookingId });
+
+        if (!intent) {
             return errorResponse(
-                "This booking is not awaiting payment.",
-                409
+                "Checkout session not found. If payment was deducted, contact the property with your Razorpay payment ID.",
+                404
             );
         }
 
-        const savedOrderId = booking.razorpayOrderId;
-
-        if (
-            typeof savedOrderId !== "string" ||
-            savedOrderId !== submittedOrderId
-        ) {
+        if (intent.razorpayOrderId !== submittedOrderId) {
             return errorResponse(
-                "The payment order does not match this booking.",
+                "The payment order does not match this checkout.",
                 400
             );
         }
 
-        // Verify the signature using the order ID stored on our server.
         const expectedSignature = createHmac("sha256", keySecret)
-            .update(`${savedOrderId}|${paymentId}`)
+            .update(`${intent.razorpayOrderId}|${paymentId}`)
             .digest("hex");
 
         if (!safeStringEqual(expectedSignature, submittedSignature)) {
@@ -256,26 +443,26 @@ export async function POST(request) {
             key_secret: keySecret,
         });
 
-        // Verify payment details against Razorpay's API.
+        // Trust Razorpay's API response, not just the browser callback.
         const payment = await razorpay.payments.fetch(paymentId);
 
-        const totalRupees = Number(booking.pricing?.total);
+        const totalRupees = Number(intent.pricing?.total);
         const expectedAmount = Math.round(totalRupees * 100);
 
         if (
             !Number.isFinite(totalRupees) ||
             totalRupees <= 0 ||
-            payment.order_id !== savedOrderId ||
+            payment.order_id !== intent.razorpayOrderId ||
             payment.currency !== "INR" ||
             payment.amount !== expectedAmount
         ) {
             console.error(
-                "Payment details do not match booking:",
+                "Payment details do not match checkout:",
                 bookingId
             );
 
             return errorResponse(
-                "The payment details do not match this booking.",
+                "The payment details do not match this checkout.",
                 400
             );
         }
@@ -285,52 +472,89 @@ export async function POST(request) {
             payment.captured !== true
         ) {
             return errorResponse(
-                "Payment has not been captured yet. Please wait and retry.",
+                "Full payment has not been captured yet. Please wait and retry.",
                 409
             );
         }
 
-        const now = new Date();
+        const client = await clientPromise;
 
-        // Confirm only if the booking is still awaiting this payment.
-        const update = await bookings.updateOne(
-            {
-                _id: booking._id,
-                status: "pending_payment",
-                paymentStatus: "pending",
-                razorpayOrderId: savedOrderId,
-            },
-            {
-                $set: {
-                    status: "confirmed",
-                    paymentStatus: "paid",
-                    razorpayPaymentId: paymentId,
-                    paymentVerifiedAt: now,
-                    updatedAt: now,
-                    confirmationEmailStatus: "pending",
-                },
-            }
-        );
+        let booking;
 
-        if (update.modifiedCount !== 1) {
-            booking = await bookings.findOne({ bookingId });
+        try {
+            booking = await finalizePaidCheckout({
+                client,
+                db,
+                bookingId,
+                orderId: intent.razorpayOrderId,
+                paymentId,
+                amountPaise: expectedAmount,
+            });
+        } catch (error) {
+            if (error.message === "ROOM_UNAVAILABLE_AFTER_PAYMENT") {
+                console.error(
+                    "Payment captured but room became unavailable:",
+                    bookingId,
+                    paymentId
+                );
 
-            if (
-                !booking ||
-                booking.status !== "confirmed" ||
-                booking.paymentStatus !== "paid" ||
-                booking.razorpayPaymentId !== paymentId
-            ) {
+                // Do not create a booking. Payment recovery/refund is required.
+                await intents.updateOne(
+                    {
+                        bookingId,
+                        status: {
+                            $in: ["awaiting_payment", "payment_processing"],
+                        },
+                    },
+                    {
+                        $set: {
+                            status: "payment_recovery_required",
+                            paymentStatus: "paid",
+                            razorpayPaymentId: paymentId,
+                            paymentVerifiedAt: new Date(),
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
                 return errorResponse(
-                    "The booking changed during verification. Please check its status.",
+                    "Payment was received, but the room is no longer available. Your payment requires recovery or a refund. Please contact the property and provide your payment ID.",
                     409
                 );
             }
-        } else {
-            booking = await bookings.findOne({ bookingId });
+
+            if (error.message === "CHECKOUT_NOT_FOUND") {
+                return errorResponse(
+                    "Checkout session not found. If payment was deducted, contact the property with your Razorpay payment ID.",
+                    404
+                );
+            }
+
+            if (error.message === "PAYMENT_AMOUNT_MISMATCH") {
+                return errorResponse(
+                    "The payment amount does not match the checkout.",
+                    400
+                );
+            }
+
+            if (error.message === "CHECKOUT_NOT_PAYABLE") {
+                return errorResponse(
+                    "This checkout cannot be finalized. If payment was deducted, contact the property with your payment ID.",
+                    409
+                );
+            }
+
+            if (error.message === "BOOKING_CONFLICT") {
+                return errorResponse(
+                    "A different payment record already exists for this booking reference.",
+                    409
+                );
+            }
+
+            throw error;
         }
 
-        // Email delivery happens only after payment is confirmed in MongoDB.
+        // Email delivery is outside the transaction; it cannot undo payment.
         const emailStatus = await deliverConfirmationEmail(
             bookings,
             booking
@@ -343,14 +567,14 @@ export async function POST(request) {
             message:
                 emailStatus === "failed"
                     ? "Payment verified and booking confirmed. The confirmation email needs to be retried."
-                    : "Payment verified, booking confirmed, and confirmation email processed.",
+                    : "Payment verified and booking confirmed.",
             booking: publicBooking(booking, emailStatus),
         });
     } catch (error) {
         console.error("Payment verification failed:", error);
 
         return errorResponse(
-            "Unable to verify payment right now. Check your booking status before retrying.",
+            "Unable to verify payment right now. If payment was deducted, check your booking status or contact the property before retrying.",
             500
         );
     }

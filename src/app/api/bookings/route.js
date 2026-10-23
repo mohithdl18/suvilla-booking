@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
-import clientPromise, { getDatabase } from "@/lib/mongodb";
+import { getDatabase } from "@/lib/mongodb";
 import pricingConfig from "@/data/pricing.json";
 
 import {
@@ -16,12 +16,13 @@ import {
     calculateCheckoutFees,
 } from "@/logic/pricing";
 
-// export const runtime = "nodejs";
-// export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const MAX_NIGHTS = 60;
 const MAX_ROOMS = 3;
 const MAX_BODY_BYTES = 20_000;
+const CHECKOUT_TTL_HOURS = 24;
 
 const VALID_MEAL_PLANS = ["lunch", "dinner", "lunchAndDinner"];
 
@@ -49,20 +50,9 @@ const ALLOWED_CUSTOMER_KEYS = [
     "specialRequest",
 ];
 
-const ALLOWED_ROOM_KEYS = [
-    "roomId",
-    "guests",
-    "roomName",
-    "addons",
-];
-
+const ALLOWED_ROOM_KEYS = ["roomId", "guests", "roomName", "addons"];
 const ALLOWED_GUEST_KEYS = ["adults", "children"];
-
-const ALLOWED_ADDON_KEYS = [
-    "mealPlan",
-    "driver",
-    "driverMealPlan",
-];
+const ALLOWED_ADDON_KEYS = ["mealPlan", "driver", "driverMealPlan"];
 
 function jsonError(message, status = 400) {
     return NextResponse.json(
@@ -72,19 +62,16 @@ function jsonError(message, status = 400) {
 }
 
 function isPlainObject(value) {
-    return (
-        value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value) &&
-        (Object.getPrototypeOf(value) === Object.prototype ||
-            Object.getPrototypeOf(value) === null)
-    );
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
 
 function hasOnlyKeys(object, allowedKeys) {
-    return Object.keys(object).every((key) =>
-        allowedKeys.includes(key)
-    );
+    return Object.keys(object).every((key) => allowedKeys.includes(key));
 }
 
 function rejectUnknownKeys(object, allowedKeys, label) {
@@ -101,28 +88,13 @@ function rejectUnknownKeys(object, allowedKeys, label) {
 
 function validCustomer(customer) {
     if (!isPlainObject(customer)) return false;
+    if (!hasOnlyKeys(customer, ALLOWED_CUSTOMER_KEYS)) return false;
 
-    if (!hasOnlyKeys(customer, ALLOWED_CUSTOMER_KEYS)) {
-        return false;
-    }
-
-    const name =
-        typeof customer.name === "string"
-            ? customer.name.trim()
-            : "";
-
-    const email =
-        typeof customer.email === "string"
-            ? customer.email.trim()
-            : "";
-
-    const phone =
-        typeof customer.phone === "string"
-            ? customer.phone.trim()
-            : "";
+    const name = typeof customer.name === "string" ? customer.name.trim() : "";
+    const email = typeof customer.email === "string" ? customer.email.trim() : "";
+    const phone = typeof customer.phone === "string" ? customer.phone.trim() : "";
 
     if (name.length < 2 || name.length > 100) return false;
-
     if (!/^[+0-9\s()-]{7,20}$/.test(phone)) return false;
 
     if (
@@ -142,8 +114,10 @@ function validCustomer(customer) {
     for (const [key, maxLength] of optionalStringFields) {
         if (
             customer[key] !== undefined &&
-            (typeof customer[key] !== "string" ||
-                customer[key].trim().length > maxLength)
+            (
+                typeof customer[key] !== "string" ||
+                customer[key].trim().length > maxLength
+            )
         ) {
             return false;
         }
@@ -186,24 +160,15 @@ function validGuests(guests) {
 }
 
 function getRoomCapacity(roomId) {
-    if (roomId === "Room1" || roomId === "Room2") {
-        return 4;
-    }
-
-    if (roomId === "Room3" || roomId === "Room4") {
-        return 3;
-    }
-
+    if (roomId === "Room1" || roomId === "Room2") return 4;
+    if (roomId === "Room3" || roomId === "Room4") return 3;
     return 0;
 }
 
 function normalizeRoomRequest(room) {
     rejectUnknownKeys(room, ALLOWED_ROOM_KEYS, "room selection");
 
-    if (
-        typeof room.roomId !== "string" ||
-        !validateRoom(room.roomId)
-    ) {
+    if (typeof room.roomId !== "string" || !validateRoom(room.roomId)) {
         throw new Error("Invalid room selected.");
     }
 
@@ -214,17 +179,16 @@ function normalizeRoomRequest(room) {
     const guestCount = room.guests.adults + room.guests.children;
 
     if (guestCount > getRoomCapacity(room.roomId)) {
-        throw new Error(
-            "The selected room cannot accommodate those guests."
-        );
+        throw new Error("The selected room cannot accommodate those guests.");
     }
 
-    // Compatibility only: nested room add-ons must be empty.
-    // All actual add-on choices belong to the top-level addons field.
+    // Add-ons are selected once for the entire booking.
     if (
         room.addons !== undefined &&
-        (!isPlainObject(room.addons) ||
-            Object.keys(room.addons).length !== 0)
+        (
+            !isPlainObject(room.addons) ||
+            Object.keys(room.addons).length !== 0
+        )
     ) {
         throw new Error(
             "Send add-on selections once at the booking level."
@@ -233,8 +197,10 @@ function normalizeRoomRequest(room) {
 
     if (
         room.roomName !== undefined &&
-        (typeof room.roomName !== "string" ||
-            room.roomName.length > 100)
+        (
+            typeof room.roomName !== "string" ||
+            room.roomName.length > 100
+        )
     ) {
         throw new Error("Invalid room selection.");
     }
@@ -277,7 +243,7 @@ function calculateMealCharges(mealIds, people, nights, labelPrefix = "") {
     let total = 0;
 
     for (const mealId of mealIds) {
-        const price = pricingConfig.meals[mealId];
+        const price = pricingConfig.meals?.[mealId];
 
         if (!Number.isFinite(price) || price < 0) {
             throw new Error("Invalid meal selection.");
@@ -314,19 +280,14 @@ function calculateMealCharges(mealIds, people, nights, labelPrefix = "") {
 function calculateBookingAddons(addons, totalGuests, nights) {
     rejectUnknownKeys(addons, ALLOWED_ADDON_KEYS, "add-on selection");
 
-    const guestMealIds = normalizeMealIds(
-        addons.mealPlan ?? []
-    );
-
+    const guestMealIds = normalizeMealIds(addons.mealPlan ?? []);
     const driver = addons.driver ?? false;
 
     if (typeof driver !== "boolean") {
         throw new Error("Invalid driver accommodation selection.");
     }
 
-    const driverMealIds = normalizeMealIds(
-        addons.driverMealPlan ?? []
-    );
+    const driverMealIds = normalizeMealIds(addons.driverMealPlan ?? []);
 
     if (!driver && driverMealIds.length > 0) {
         throw new Error(
@@ -343,20 +304,19 @@ function calculateBookingAddons(addons, totalGuests, nights) {
     const driverMeals = driver
         ? calculateMealCharges(driverMealIds, 1, nights, "Driver ")
         : {
-              meals: {},
-              items: [],
-              total: 0,
-              mealPlan: [],
-          };
+            meals: {},
+            items: [],
+            total: 0,
+            mealPlan: [],
+        };
 
-    const driverPrice = Number(pricingConfig.driver.price);
+    const driverPrice = Number(pricingConfig.driver?.price);
 
     if (!Number.isFinite(driverPrice) || driverPrice < 0) {
         throw new Error("Pricing configuration is invalid.");
     }
 
     const driverTotal = driver ? driverPrice * nights : 0;
-
     const items = [...guestMeals.items];
 
     if (driver) {
@@ -428,11 +388,27 @@ function validateDateStrings(checkIn, checkOut) {
     return isRealDate(checkIn) && isRealDate(checkOut);
 }
 
-export async function POST(request) {
-    let session;
+const VALIDATION_MESSAGES = [
+    "Invalid booking request.",
+    "Invalid customer.",
+    "Invalid room selection.",
+    "Unexpected fields in booking request. Refresh the page and try again.",
+    "Unexpected fields in customer. Refresh the page and try again.",
+    "Unexpected fields in room selection. Refresh the page and try again.",
+    "Unexpected fields in add-on selection. Refresh the page and try again.",
+    "Invalid room selected.",
+    "Invalid guest count for a selected room.",
+    "The selected room cannot accommodate those guests.",
+    "Send add-on selections once at the booking level.",
+    "Invalid add-on selection.",
+    "Invalid meal plan selected.",
+    "Invalid meal selection.",
+    "Invalid driver accommodation selection.",
+    "Select driver accommodation before choosing driver meals.",
+];
 
+export async function POST(request) {
     try {
-        // Enforce JSON requests and a small request body limit.
         const contentType = request.headers.get("content-type") ?? "";
 
         if (!contentType.toLowerCase().includes("application/json")) {
@@ -449,10 +425,7 @@ export async function POST(request) {
 
         const rawBody = await request.text();
 
-        if (
-            !rawBody ||
-            Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES
-        ) {
+        if (!rawBody || Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
             return jsonError("Invalid or oversized request body.", 413);
         }
 
@@ -499,9 +472,7 @@ export async function POST(request) {
             body.rooms.length < 1 ||
             body.rooms.length > MAX_ROOMS
         ) {
-            return jsonError(
-                `Select between 1 and ${MAX_ROOMS} rooms.`
-            );
+            return jsonError(`Select between 1 and ${MAX_ROOMS} rooms.`);
         }
 
         if (!isPlainObject(body.addons)) {
@@ -509,19 +480,19 @@ export async function POST(request) {
         }
 
         const rooms = body.rooms.map(normalizeRoomRequest);
-        const roomIds = rooms.map((item) => item.roomId);
+        const roomIds = rooms.map((room) => room.roomId);
 
         if (new Set(roomIds).size !== roomIds.length) {
             return jsonError("Each selected room must be unique.");
         }
 
         const totalGuests = rooms.reduce(
-            (sum, item) =>
-                sum + item.guests.adults + item.guests.children,
+            (sum, room) =>
+                sum + room.guests.adults + room.guests.children,
             0
         );
 
-        // All pricing is recalculated here using server-side configuration.
+        // All pricing is calculated on the server.
         const roomPricing = calculateRoomPrice(checkIn, checkOut);
 
         if (
@@ -539,10 +510,10 @@ export async function POST(request) {
             roomPricing.nights
         );
 
-        // calculateRoomPrice returns the price for one room.
-        const pricedRooms = rooms.map((item) => ({
-            roomId: item.roomId,
-            guests: item.guests,
+        // calculateRoomPrice returns the rate for one room.
+        const pricedRooms = rooms.map((room) => ({
+            roomId: room.roomId,
+            guests: room.guests,
             addons: {
                 extraAdults: 0,
                 children: 0,
@@ -563,7 +534,7 @@ export async function POST(request) {
         }));
 
         const roomTotal = pricedRooms.reduce(
-            (sum, item) => sum + item.pricing.roomTotal,
+            (sum, room) => sum + room.pricing.roomTotal,
             0
         );
 
@@ -585,24 +556,29 @@ export async function POST(request) {
             .slice(0, 12)
             .toUpperCase()}`;
 
-        // This route reserves the booking as pending payment.
-        // A separate verified payment flow must confirm it.
-        const booking = {
+        const now = new Date();
+        const expiresAt = new Date(
+            now.getTime() + CHECKOUT_TTL_HOURS * 60 * 60 * 1000
+        );
+
+        // Temporary checkout data only. No booking or room reservation yet.
+        const checkoutIntent = {
             bookingId,
             roomIds,
             rooms: pricedRooms,
             addons: bookingAddons,
             checkIn,
             checkOut,
+            stayDates,
             nights: roomPricing.nights,
             customer: normalizeCustomer(customer),
             guests: {
                 adults: rooms.reduce(
-                    (sum, item) => sum + item.guests.adults,
+                    (sum, room) => sum + room.guests.adults,
                     0
                 ),
                 children: rooms.reduce(
-                    (sum, item) => sum + item.guests.children,
+                    (sum, room) => sum + room.guests.children,
                     0
                 ),
                 total: totalGuests,
@@ -616,140 +592,88 @@ export async function POST(request) {
                 platformFee: fees.platformFee,
                 total: fees.total,
             },
-            status: "pending_payment",
+            status: "awaiting_payment",
             paymentStatus: "pending",
-            createdAt: new Date(),
+            createdAt: now,
+            expiresAt,
         };
 
-        const client = await clientPromise;
         const db = await getDatabase();
-
         const availabilityCollection = db.collection("availability");
-        const bookingsCollection = db.collection("bookings");
+        const intentsCollection = db.collection("checkout_intents");
 
-        // Prefer creating indexes in a deployment migration, not on each request.
-        await availabilityCollection.createIndex(
-            { date: 1 },
-            { unique: true }
-        );
+        // Preliminary availability check only. This does not reserve rooms.
+        // Final availability must be checked atomically after payment capture.
+        for (const date of stayDates) {
+            const existing = await availabilityCollection.findOne(
+                { date },
+                {
+                    projection: {
+                        booked_rooms: 1,
+                        blocked_rooms: 1,
+                    },
+                }
+            );
 
-        await bookingsCollection.createIndex(
-            { bookingId: 1 },
-            { unique: true }
-        );
+            const bookedRooms = existing?.booked_rooms ?? [];
+            const blockedRooms = existing?.blocked_rooms ?? [];
 
-        session = client.startSession();
-
-        await session.withTransaction(async () => {
-            // Check all rooms for all nights.
-            for (const date of stayDates) {
-                const existing = await availabilityCollection.findOne(
-                    { date },
-                    { session }
-                );
-
-                const bookedRooms = existing?.booked_rooms ?? [];
-                const blockedRooms = existing?.blocked_rooms ?? [];
-
-                for (const roomId of roomIds) {
-                    if (
+            if (
+                roomIds.some(
+                    (roomId) =>
                         bookedRooms.includes(roomId) ||
                         blockedRooms.includes(roomId)
-                    ) {
-                        throw new Error("ROOM_UNAVAILABLE");
-                    }
-                }
-            }
-
-            // Write the availability documents inside the same transaction.
-            for (const date of stayDates) {
-                await availabilityCollection.updateOne(
-                    { date },
-                    {
-                        $setOnInsert: { date },
-                        $addToSet: {
-                            booked_rooms: { $each: roomIds },
-                        },
-                    },
-                    {
-                        upsert: true,
-                        session,
-                    }
+                )
+            ) {
+                return jsonError(
+                    "One or more selected rooms are no longer available. Please search again.",
+                    409
                 );
             }
+        }
 
-            await bookingsCollection.insertOne(booking, { session });
-        });
+        // Indexes must be created separately, not on every checkout request.
+        // Do NOT add a TTL index on expiresAt: a captured payment may still
+        // require booking finalization or recovery after the intent expires.
+        await intentsCollection.insertOne(checkoutIntent);
 
         return NextResponse.json(
             {
                 success: true,
-                message: "Booking created. Payment is required to confirm it.",
+                message:
+                    "Checkout prepared. Complete payment to confirm your booking.",
                 booking: {
-                    bookingId: booking.bookingId,
-                    status: booking.status,
-                    paymentStatus: booking.paymentStatus,
-                    checkIn: booking.checkIn,
-                    checkOut: booking.checkOut,
-                    nights: booking.nights,
-                    rooms: booking.rooms,
-                    guests: booking.guests,
-                    addons: booking.addons,
-                    pricing: booking.pricing,
+                    bookingId,
+                    status: "awaiting_payment",
+                    paymentStatus: "pending",
+                    checkIn,
+                    checkOut,
+                    nights: roomPricing.nights,
+                    rooms: pricedRooms,
+                    guests: checkoutIntent.guests,
+                    addons: bookingAddons,
+                    pricing: checkoutIntent.pricing,
                 },
             },
             { status: 201 }
         );
     } catch (error) {
-        if (error.message === "ROOM_UNAVAILABLE") {
-            return jsonError(
-                "One or more selected rooms are no longer available. Please search again.",
-                409
-            );
-        }
-
-        const validationMessages = [
-            "Invalid booking request.",
-            "Unexpected fields in booking request. Refresh the page and try again.",
-            "Unexpected fields in customer. Refresh the page and try again.",
-            "Unexpected fields in room selection. Refresh the page and try again.",
-            "Unexpected fields in add-on selection. Refresh the page and try again.",
-            "Invalid room selection.",
-            "Invalid room selected.",
-            "Invalid guest count for a selected room.",
-            "The selected room cannot accommodate those guests.",
-            "Send add-on selections once at the booking level.",
-            "Invalid add-on selection.",
-            "Invalid meal plan selected.",
-            "Invalid meal selection.",
-            "Invalid driver accommodation selection.",
-            "Select driver accommodation before choosing driver meals.",
-        ];
-
-        if (validationMessages.includes(error.message)) {
+        if (VALIDATION_MESSAGES.includes(error.message)) {
             return jsonError(error.message);
         }
 
-        if (
-            error.code === 11000 ||
-            error.code === 112 ||
-            error.codeName === "WriteConflict"
-        ) {
+        if (error.code === 11000) {
             return jsonError(
-                "Availability changed while processing your request. Please search again.",
+                "Unable to prepare checkout. Please try again.",
                 409
             );
         }
 
-        console.error("Booking creation failed:", error);
+        console.error("Checkout preparation failed:", error);
 
         return jsonError(
-            "Unable to create the booking. Please try again.",
+            "Unable to prepare checkout. Please try again.",
             500
         );
-    } finally {
-        if (session) {
-            await session.endSession();
-        }
     }
 }

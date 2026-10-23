@@ -5,24 +5,25 @@ const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB || "suvilla_bookings";
 
 if (!uri) {
-    throw new Error("Please add MONGODB_URI to .env.local");
+    throw new Error("Please add MONGODB_URI to your environment variables.");
 }
 
-const options = {};
+const options = {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+};
 
-let client;
+const globalForMongo = globalThis;
+
 let clientPromise;
 
-if (process.env.NODE_ENV === "development") {
-    if (!global._mongoClientPromise) {
-        client = new MongoClient(uri, options);
-        global._mongoClientPromise = client.connect();
-    }
-
-    clientPromise = global._mongoClientPromise;
+if (globalForMongo._mongoClientPromise) {
+    clientPromise = globalForMongo._mongoClientPromise;
 } else {
-    client = new MongoClient(uri, options);
+    const client = new MongoClient(uri, options);
     clientPromise = client.connect();
+
+    globalForMongo._mongoClientPromise = clientPromise;
 }
 
 export default clientPromise;
