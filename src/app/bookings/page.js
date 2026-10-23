@@ -195,6 +195,7 @@ function loadRazorpayCheckout() {
     });
 }
 
+
 function openRazorpayCheckout({ key, order, customer, bookingId }) {
     return new Promise((resolve, reject) => {
         if (!window.Razorpay) {
@@ -206,6 +207,7 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
 
         const finish = (callback, value) => {
             if (settled) return;
+
             settled = true;
             callback(value);
         };
@@ -217,43 +219,55 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
             name: "SU VILLA",
             description: `Booking ${bookingId}`,
             order_id: order.id,
+
             prefill: {
                 name: customer.name,
                 email: customer.email,
                 contact: customer.phone,
             },
+
             notes: {
                 bookingId,
             },
+
             theme: {
                 color: COLORS.foreground,
             },
+
             modal: {
                 ondismiss: () => {
                     finish(
                         reject,
                         new Error(
-                            "Payment window closed. Your booking has not been confirmed."
+                            "Payment window closed before payment was completed. If you completed a payment, please contact the property before retrying."
                         )
                     );
                 },
             },
+
+            // Resolve only when Razorpay returns successful payment details.
+            // The backend will independently verify the payment.
             handler: (paymentResponse) => {
                 finish(resolve, paymentResponse);
             },
         });
 
+        // IMPORTANT:
+        // Do not reject the promise on payment.failed.
+        // This event can represent a failed attempt while the customer
+        // is still inside Razorpay and can retry payment.
         checkout.on("payment.failed", (response) => {
-            const description =
-                response?.error?.description ||
-                "Payment failed. Your booking has not been confirmed.";
-
-            finish(reject, new Error(description));
+            console.warn(
+                "Razorpay payment attempt failed; checkout remains open for retry.",
+                response?.error?.code || "UNKNOWN_ERROR",
+                response?.error?.description || "No description provided."
+            );
         });
 
         checkout.open();
     });
 }
+
 
 export default function BookingPage() {
     // Set the dates after mounting to avoid evaluating the current time
