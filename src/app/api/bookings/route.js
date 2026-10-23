@@ -16,8 +16,8 @@ import {
     calculateCheckoutFees,
 } from "@/logic/pricing";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
 
 const MAX_NIGHTS = 60;
 const MAX_ROOMS = 3;

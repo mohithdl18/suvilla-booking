@@ -5,8 +5,8 @@ import Razorpay from "razorpay";
 
 import { getDatabase } from "@/lib/mongodb";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
 
 const ORDER_CREATION_LEASE_MS = 2 * 60 * 1000;
 
