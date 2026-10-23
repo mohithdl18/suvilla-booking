@@ -100,7 +100,10 @@ function mergeRoomAddons(selectedRoom, selectedAddons) {
 }
 
 function normalizeAddonChoices(addons) {
-    const source = addons?.addons ?? {};
+    // Accept add-ons directly or nested under `addons`.
+    // Only supported selections are sent to the backend.
+    // Client-calculated prices are never used as authoritative pricing.
+    const source = addons?.addons ?? addons ?? {};
 
     return {
         mealPlan: Array.isArray(source.mealPlan)
@@ -195,7 +198,6 @@ function loadRazorpayCheckout() {
     });
 }
 
-
 function openRazorpayCheckout({ key, order, customer, bookingId }) {
     return new Promise((resolve, reject) => {
         if (!window.Razorpay) {
@@ -252,10 +254,8 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
             },
         });
 
-        // IMPORTANT:
-        // Do not reject the promise on payment.failed.
-        // This event can represent a failed attempt while the customer
-        // is still inside Razorpay and can retry payment.
+        // Do not reject on payment.failed. A failed attempt can occur while
+        // the customer is still in Razorpay and may retry the payment.
         checkout.on("payment.failed", (response) => {
             console.warn(
                 "Razorpay payment attempt failed; checkout remains open for retry.",
@@ -268,10 +268,9 @@ function openRazorpayCheckout({ key, order, customer, bookingId }) {
     });
 }
 
-
 export default function BookingPage() {
-    // Set the dates after mounting to avoid evaluating the current time
-    // during the initial server prerender.
+    // Set dates after mounting to avoid evaluating the current date during
+    // the initial server prerender.
     const [dates, setDates] = useState({
         checkIn: "",
         checkOut: "",
@@ -408,7 +407,10 @@ export default function BookingPage() {
                         sum + room.guests.adults + room.guests.children,
                     0
                 ),
-                addons: normalizeAddonChoices(selectedAddons),
+
+                // Preserve the complete add-on object for the UI, including
+                // items, total, and meal details for both booking modals.
+                addons: selectedAddons.addons ?? {},
             });
 
             setCustomer({
@@ -466,10 +468,13 @@ export default function BookingPage() {
                 checkOut: dates.checkOut,
                 customer: normalizeCustomerForRequest(customer),
                 rooms: roomsPayload,
+
+                // Send only the selected add-on choices. The server computes
+                // the actual prices from trusted pricing data.
                 addons: normalizeAddonChoices(addons),
             };
 
-            // 1. Create the pending booking. The server calculates pricing.
+            // 1. Create the checkout intent. The server calculates pricing.
             const bookingResponse = await fetch("/api/bookings", {
                 method: "POST",
                 headers: {
