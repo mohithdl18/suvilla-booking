@@ -1,0 +1,40 @@
+{
+  "currency": "INR",
+  "roomRates": {
+    "weekday": 12999,
+    "weekend": 14999,
+    "peakDay": 15999
+  },
+  "includedGuests": 2,
+  "includedBreakfast": true,
+  "extraAdult": {
+    "price": 4000,
+    "perNight": true
+  },
+  "child": {
+    "price": 2000,
+    "perNight": true,
+    "minAge": 6,
+    "maxAge": 12,
+    "freeBelowAge": 6
+  },
+  "meals": {
+    "extraBreakfast": 450,
+    "lunch": 550,
+    "dinner": 650,
+    "lunchAndDinner": 1100,
+    "allMeals": 1500
+  },
+  "driver": {
+    "price": 1500,
+    "includesBreakfast": true
+  },
+  "checkoutFees": {
+    "taxPercent": 18,
+    "platformFeePercent": 2
+  },
+  "fullVilla": {
+    "withCottage": 100000,
+    "withoutCottage": 85000
+  }
+}

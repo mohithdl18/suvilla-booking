@@ -1,0 +1,66 @@
+
+{
+  "title": "Terms and Conditions",
+  "packageInclusions": {
+    "title": "Package Inclusions and Terms of Service",
+    "items": [
+      "Rates are applicable for single and double occupancy.",
+      "The package includes breakfast at Teatro – The Estate Kitchen and lunch at Teatro or Amish.",
+      "Applicable government taxes will be charged additionally."
+    ]
+  },
+  "cancellationPolicy": {
+    "title": "Cancellation Policy",
+    "standardPeriod": {
+      "title": "Stays outside 19 December 2026 to 2 January 2027",
+      "items": [
+        "Cancellations received earlier than 7 days prior to arrival will not attract any retention.",
+        "Cancellations received within 7 days of arrival will attract 100% retention."
+      ]
+    },
+    "festivePeriod": {
+      "title": "Stays between 19 December 2026 and 2 January 2027",
+      "items": [
+        "Cancellations received earlier than 30 days prior to arrival will not attract any retention.",
+        "Cancellations received within 30 days of arrival will attract 100% retention."
+      ]
+    },
+    "generalTerms": [
+      "The guest shall be charged the total price if cancelled."
+    ]
+  },
+  "reservations": {
+    "title": "Reservations and Booking Assistance",
+    "phone": "+91 80651 98889",
+    "email": "rosettadirect@rosettahospitality.com",
+    "description": "For further information or booking assistance, please contact our Reservations team."
+  },
+  "mealPlan": {
+    "title": "Meal Plan",
+    "name": "Breakfast & Lunch",
+    "icon": "https://homesweb.staah.net/common/images/meal_icon_updated.svg"
+  },
+  "childPolicy": {
+    "title": "Child Policy",
+    "items": [
+      "One child between 0–5 years can be accommodated in Robusta Room, Cardamom Studio, and Navilu Suite, sharing parents’ bed at no additional cost.",
+      "Two children between 0–10 years can be accommodated in Pepper Suite and Teak Suite at no additional cost.",
+      "Guests aged 12 years and above are considered adults."
+    ],
+    "disclaimer": "Rates, inclusions, and occupancy are subject to room type and prevailing taxes."
+  },
+  "extraBedPolicy": {
+    "title": "Extra Bed Policy",
+    "introduction": "At Rosetta, we welcome families and ensure every guest enjoys a comfortable stay.",
+    "items": [
+      "One child up to 11 years may be accommodated at no additional cost when sharing the parents’ bed.",
+      "Guests aged 12 years and above are considered adults and will be charged as per the applicable extra adult rate.",
+      "Accommodation for children and extra adults is subject to room type and maximum occupancy limits."
+    ],
+    "disclaimer": "Rates and inclusions may vary based on room category and package selected."
+  },
+  "privacyStatement": {
+    "title": "Privacy Statement",
+    "content": "Rosetta Sakleshpur respects your privacy and protects the personal information shared through our website or booking engine. We collect only necessary details to process reservations, respond to enquiries, personalise your experience, facilitate payments and meet legal requirements. We do not sell, rent or trade your data. Information is shared only with authorised partners or authorities where required. By using our website or booking engine, you consent to this use under applicable I"
+  }
+}
