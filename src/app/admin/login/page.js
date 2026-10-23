@@ -251,7 +251,7 @@ export default function AdminLoginPage() {
                 </div>
 
                 <p className="mt-6 text-center text-xs opacity-50">
-                    © {new Date().getFullYear()} SU VILLA. All rights reserved.
+                   © 2026 SU VILLA. All rights reserved.
                 </p>
             </section>
         </main>

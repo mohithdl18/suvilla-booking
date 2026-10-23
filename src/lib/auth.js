@@ -1,3 +1,4 @@
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 
@@ -29,9 +30,7 @@ export function createAdminSession(username, secret) {
         })
     ).toString("base64url");
 
-    const signature = signPayload(payload, secret);
-
-    return `${payload}.${signature}`;
+    return `${payload}.${signPayload(payload, secret)}`;
 }
 
 export function verifyAdminSessionToken(token, secret) {
@@ -58,8 +57,9 @@ export function verifyAdminSessionToken(token, secret) {
     }
 
     try {
-        const decoded = Buffer.from(payload, "base64url").toString("utf8");
-        const session = JSON.parse(decoded);
+        const session = JSON.parse(
+            Buffer.from(payload, "base64url").toString("utf8")
+        );
 
         if (
             typeof session.username !== "string" ||
@@ -85,6 +85,7 @@ export async function getAdminSession() {
         return null;
     }
 
+    // Read cookies only when this function is called during a request.
     const cookieStore = await cookies();
     const token = cookieStore.get(SESSION_COOKIE)?.value;
 
