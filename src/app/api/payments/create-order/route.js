@@ -4,8 +4,8 @@ import Razorpay from "razorpay";
 
 import { getDatabase } from "@/lib/mongodb";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
 
 function errorResponse(message, status) {
     return NextResponse.json(

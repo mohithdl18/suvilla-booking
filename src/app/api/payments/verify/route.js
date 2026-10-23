@@ -6,8 +6,8 @@ import Razorpay from "razorpay";
 import { getDatabase } from "@/lib/mongodb";
 import { sendBookingConfirmation } from "@/lib/email/sendBookingConfirmation";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
 
 function errorResponse(message, status = 400) {
     return NextResponse.json(

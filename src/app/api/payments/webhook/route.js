@@ -5,8 +5,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { getDatabase } from "@/lib/mongodb";
 import { sendBookingConfirmation } from "@/lib/email/sendBookingConfirmation";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
 
 function response(message, status = 200) {
     return NextResponse.json({ success: status < 400, message }, { status });
